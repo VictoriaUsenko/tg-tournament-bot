@@ -257,10 +257,16 @@ def run_telegram_in_background():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(setup_telegram_app())
 
-@app.before_first_request
-def start_telegram():
-    thread = threading.Thread(target=run_telegram_in_background, daemon=True)
-    thread.start()
+# Глобальный флаг, чтобы запустить Telegram только один раз
+_started = False
+
+@app.before_request
+def start_telegram_once():
+    global _started
+    if not _started:
+        _started = True
+        thread = threading.Thread(target=run_telegram_in_background, daemon=True)
+        thread.start()
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
