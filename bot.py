@@ -139,32 +139,50 @@ async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) < 3:
         await update.message.reply_text(
             "Укажите количество мест и дату/время турнира:\n"
-            "Формат: /open-M-R ДД.ММ.ГГ ЧЧ-ММ\n"
-            "Пример: /open-8-2 19.10.26 14-10"
+            "Формат 1: /open M R ДД.ММ.ГГ ЧЧ-ММ\n"
+            "Формат 2: /open M-R ДД.ММ.ГГ ЧЧ-ММ\n"
+            "Примеры:\n/open 8 2 19.10.26 14-10\n/open 8-2 19.10.26 14-10"
         )
         return
 
-    # Парсим первую часть как /open-M-R
-    command_part = context.args[0]
-    match = re.fullmatch(r'/open-(\d+)-(\d+)', command_part)
-    if not match:
-        await update.message.reply_text(
-            "Неверный формат команды. Используйте: /open-8-2 19.10.26 14-10"
-        )
+    slots_arg = context.args[0]
+    remaining_args = context.args[1:]
+
+    if '-' in slots_arg:
+        parts = slots_arg.split('-', 1)
+        try:
+            MAIN_SLOTS = int(parts[0])
+            RESERVE_SLOTS = int(parts[1])
+        except (ValueError, IndexError):
+            await update.message.reply_text("Неверный формат количества мест. Используйте: 8-2")
+            return
+    else:
+        if len(context.args) < 4:
+            await update.message.reply_text(
+                "Недостаточно параметров.\n"
+                "Пример: /open 8 2 19.10.26 14-10"
+            )
+            return
+        try:
+            MAIN_SLOTS = int(slots_arg)
+            RESERVE_SLOTS = int(context.args[1])
+            remaining_args = context.args[2:]
+        except ValueError:
+            await update.message.reply_text("Количество мест должно быть целыми числами.")
+            return
+
+    if MAIN_SLOTS <= 0 or RESERVE_SLOTS < 0:
+        await update.message.reply_text("Основных мест должно быть ≥1, запасных ≥0.")
         return
 
-    try:
-        MAIN_SLOTS = int(match.group(1))
-        RESERVE_SLOTS = int(match.group(2))
-        if MAIN_SLOTS <= 0 or RESERVE_SLOTS < 0:
-            raise ValueError
-        TOTAL_SLOTS = MAIN_SLOTS + RESERVE_SLOTS
-    except (ValueError, IndexError):
-        await update.message.reply_text("Количество мест должно быть положительным числом.")
+    TOTAL_SLOTS = MAIN_SLOTS + RESERVE_SLOTS
+
+    if len(remaining_args) < 2:
+        await update.message.reply_text("Укажите дату и время: ДД.ММ.ГГ ЧЧ-ММ")
         return
 
-    date_input = context.args[1].strip()
-    time_input = context.args[2].strip()
+    date_input = remaining_args[0].strip()
+    time_input = remaining_args[1].strip()
 
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}', date_input):
         await update.message.reply_text(
