@@ -108,6 +108,7 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
 # ================== ОБРАБОТЧИКИ КОМАНД И КНОПОК ==================
 
 async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"🔍 Получена команда /open от {update.effective_user.id} в чате {update.effective_chat.id}")
     global registration_open, participants, register_message_id, tournament_date, admin_user_titles
 
     if registration_open:
@@ -234,15 +235,16 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
 application = None
 _started = False
+_ready = False
 
 def run_telegram_app():
-    """Запускает Telegram Application в фоновом потоке."""
-    global application
+    """Запускает Telegram Application в фоновом потоке без блокировки."""
+    global application, _ready
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     async def main():
-        global application
+        global application, _ready
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
         application.add_handler(CommandHandler("open", open_registration))
@@ -255,17 +257,24 @@ def run_telegram_app():
 
         await application.initialize()
         await application.start()
-        logger.info("✅ Telegram-приложение готово к работе.")
+        logger.info("✅ Telegram-приложение запущено и ОБРАБАТЫВАЕТ обновления.")
+        
+        _ready = True
 
-        # Блокировка потока
-        await asyncio.Event().wait()
+        # Важно: не блокируем event loop, а просто держим его активным
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
     try:
         loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        logger.error(f"Ошибка в Telegram-потоке: {e}")
     finally:
-        loop.run_until_complete(application.stop())
+        if application:
+            loop.run_until_complete(application.stop())
         loop.close()
 
 @app.before_request
@@ -275,8 +284,13 @@ def start_telegram_once():
         _started = True
         thread = threading.Thread(target=run_telegram_app, daemon=True)
         thread.start()
-        # Даём время на инициализацию
-        time.sleep(2)
+        # Ждём до 5 секунд инициализации
+        for _ in range(10):
+            if _ready:
+                break
+            time.sleep(0.5)
+        if not _ready:
+            logger.warning("⚠️ Telegram-приложение может быть не готово!")
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
