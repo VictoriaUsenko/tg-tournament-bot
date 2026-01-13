@@ -29,7 +29,7 @@ TOTAL_SLOTS = MAIN_SLOTS + RESERVE_SLOTS
 participants = []
 registration_open = False
 register_message_id = None
-tournament_date = None
+tournament_display = None  # ← Теперь храним готовую строку для отображения
 admin_user_titles = {}
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
@@ -59,13 +59,13 @@ def get_display_name(user) -> str:
 
 # Эта функция больше не используется в основном потоке, но оставлена на случай необходимости
 def format_participants_list():
-    if not participants or not tournament_date:
+    if not participants or not tournament_display:
         return "Нет участников."
 
     main_list = [p['full_name'] for p in participants if p['status'] == 'main']
     reserve_list = [p['full_name'] for p in participants if p['status'] == 'reserve']
 
-    msg = f"📋 Участники турнира {tournament_date}:\n\n"
+    msg = f"📋 Участники турнира {tournament_display}:\n\n"
     if main_list:
         msg += "🔹 Основные:\n" + "\n".join(f"• {u}" for u in main_list) + "\n\n"
     if reserve_list:
@@ -74,9 +74,9 @@ def format_participants_list():
     return msg
 
 async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    global register_message_id, tournament_date
+    global register_message_id, tournament_display
 
-    if not register_message_id or not tournament_date:
+    if not register_message_id or not tournament_display:
         return
 
     main_list = [p['full_name'] for p in participants if p['status'] == 'main']
@@ -87,7 +87,7 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
 
     # Формируем полное сообщение с именами
     text = (
-        f"🎉 Регистрация на турнир {tournament_date}!\n"
+        f"🎉 Регистрация на турнир {tournament_display}!\n"
         f"Места: {MAIN_SLOTS} основных + {RESERVE_SLOTS} запасных.\n\n"
         f"🔹 Основные: {main_count}/{MAIN_SLOTS}\n"
     )
@@ -119,28 +119,40 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
 
 async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"🔍 Получена команда /open от {update.effective_user.id} в чате {update.effective_chat.id}")
-    global registration_open, participants, register_message_id, tournament_date, admin_user_titles
+    global registration_open, participants, register_message_id, tournament_display, admin_user_titles
 
     if registration_open:
         await update.message.reply_text("Регистрация уже открыта!")
         return
 
-    if not context.args:
+    if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "Укажите дату турнира в формате ДД.ММ.ГГ\nПример: /open 13.10.26"
+            "Укажите дату и время турнира:\n"
+            "Формат: /open ДД.ММ.ГГ ЧЧ-ММ\n"
+            "Пример: /open 19.01.26 14-10"
         )
         return
 
     date_input = context.args[0].strip()
+    time_input = context.args[1].strip()
+
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}', date_input):
         await update.message.reply_text(
-            "Неверный формат даты. Используйте ДД.ММ.ГГ (например, 13.10.26)"
+            "Неверный формат даты. Используйте ДД.ММ.ГГ (например, 19.01.26)"
         )
         return
 
-    tournament_date = date_input
-    chat_id = update.effective_chat.id
+    if not re.fullmatch(r'\d{2}-\d{2}', time_input):
+        await update.message.reply_text(
+            "Неверный формат времени. Используйте ЧЧ-ММ (например, 14-10)"
+        )
+        return
 
+    # Преобразуем 14-10 → 14:10
+    time_display = time_input.replace('-', ':')
+    tournament_display = f"{date_input} в {time_display} по МСК"
+
+    chat_id = update.effective_chat.id
     admin_user_titles = await get_group_admin_titles(context, chat_id)
 
     registration_open = True
@@ -152,7 +164,7 @@ async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]]
 
     message = await update.message.reply_text(
-        f"🎉 Открыта регистрация на турнир {tournament_date}!\n"
+        f"🎉 Открыта регистрация на турнир {tournament_display}!\n"
         f"Места: {MAIN_SLOTS} основных + {RESERVE_SLOTS} запасных.\n"
         "Нажмите кнопку ниже, чтобы записаться:",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -161,9 +173,9 @@ async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_message_id = message.message_id
 
 async def close_registration_manually(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global registration_open
+    global registration_open, tournament_display
 
-    if not register_message_id or not tournament_date:
+    if not register_message_id or not tournament_display:
         await update.message.reply_text("Нет активной регистрации.")
         return
 
@@ -173,12 +185,11 @@ async def close_registration_manually(update: Update, context: ContextTypes.DEFA
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=register_message_id,
-            text=f"🔒 Регистрация на турнир {tournament_date} завершена!"
+            text=f"🔒 Регистрация на турнир {tournament_display} завершена!"
         )
     except:
         pass
 
-    # Опционально: можно убрать эти две строки, если не нужен финальный список
     await update.message.reply_text(format_participants_list())
     await update.message.reply_text("✅ Регистрация закрыта.")
 
@@ -214,7 +225,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "status": status
         })
 
-        # УДАЛЕНО: await context.bot.send_message(...)
         await update_registration_message(context, chat_id)
 
     elif query.data == "unregister":
@@ -223,7 +233,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         participants = [p for p in participants if p["user_id"] != user.id]
-        # УДАЛЕНО: await context.bot.send_message(...)
         await update_registration_message(context, chat_id)
 
 async def list_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
