@@ -226,7 +226,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Токен не задан!")
 
-# Получаем внешний URL из переменной окружения Render
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 if not RENDER_EXTERNAL_URL:
     raise ValueError("Переменная RENDER_EXTERNAL_URL не задана!")
@@ -234,28 +233,28 @@ if not RENDER_EXTERNAL_URL:
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
-async def setup_telegram_app():
-    global application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("open", open_registration))
-    application.add_handler(CommandHandler("close", close_registration_manually))
-    application.add_handler(CommandHandler("list", list_participants))
-    application.add_handler(CallbackQueryHandler(button_handler))
-
-    # Устанавливаем webhook
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"✅ Webhook успешно установлен на: {WEBHOOK_URL}")
-
-    # Запускаем приложение
-    await application.initialize()
-    await application.start()
-    logger.info("Telegram-приложение запущено в режиме webhook.")
-
 def run_telegram_in_background():
+    global application
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_telegram_app())
+
+    async def _run():
+        global application
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+        application.add_handler(CommandHandler("open", open_registration))
+        application.add_handler(CommandHandler("close", close_registration_manually))
+        application.add_handler(CommandHandler("list", list_participants))
+        application.add_handler(CallbackQueryHandler(button_handler))
+
+        await application.bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
+
+        await application.initialize()
+        await application.start()
+        logger.info("✅ Telegram-приложение готово к работе.")
+
+    loop.run_until_complete(_run())
 
 # Глобальный флаг, чтобы запустить Telegram только один раз
 _started = False
@@ -270,9 +269,14 @@ def start_telegram_once():
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
+    global application
+    if application is None or application.bot is None:
+        logger.warning("Получен webhook до инициализации бота!")
+        return "Bot not ready", 503
+
     if request.headers.get("content-type") == "application/json":
-        json_string = request.get_data().decode("utf-8")
-        update = Update.de_json(json_string, application.bot)
+        # Правильный способ: передаём dict, а не строку
+        update = Update.de_json(request.get_json(force=True), application.bot)
         asyncio.run_coroutine_threadsafe(application.update_queue.put(update), application.loop)
         return "OK"
     else:
