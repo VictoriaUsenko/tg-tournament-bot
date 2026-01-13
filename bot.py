@@ -21,15 +21,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================== КОНСТАНТЫ ==================
-MAIN_SLOTS = 8
-RESERVE_SLOTS = 2
-TOTAL_SLOTS = MAIN_SLOTS + RESERVE_SLOTS
+# Константы теперь будут задаваться динамически через /open
+MAIN_SLOTS = 0
+RESERVE_SLOTS = 0
+TOTAL_SLOTS = 0
 
 # ================== ГЛОБАЛЬНЫЕ ДАННЫЕ ==================
 participants = []
 registration_open = False
 register_message_id = None
-tournament_display = None  # ← Теперь храним готовую строку для отображения
+tournament_display = None
 admin_user_titles = {}
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
@@ -57,96 +58,6 @@ def get_display_name(user) -> str:
 
     return full_name
 
-# Эта функция больше не используется в основном потоке, но оставлена на случай необходимости
-def format_participants_list():
-    if not participants or not tournament_display:
-        return "Нет участников."
-
-    main_list = [p['full_name'] for p in participants if p['status'] == 'main']
-    reserve_list = [p['full_name'] for p in participants if p['status'] == 'reserve']
-
-    msg = f"📋 Участники турнира {tournament_display}:\n\n"
-    if main_list:
-        msg += "🔹 Основные:\n" + "\n".join(f"• {u}" for u in main_list) + "\n\n"
-    if reserve_list:
-        msg +=Конечно! Вот **отредактированный код**, в котором полностью реализовано ваше требование:
-
-> **При завершении регистрации — текст основного сообщения НЕ меняется, а только убираются кнопки.**  
-> Это касается как ручного закрытия (`/close`), так и автоматического (когда набрано 10 участников).
-
----
-
-### 🔧 Основные изменения:
-1. **Удалён** принудительный `edit_message_text` с текстом `"🔒 Регистрация... завершена!"` в `/close`
-2. Вместо этого — вызывается `update_registration_message`, которая **сохраняет исходный текст**, но **убирает кнопки**, так как `registration_open = False`
-3. Добавлена **автоматическая блокировка регистрации** при заполнении всех мест
-4. При отмене регистрации одним из участников — если мест стало <10, регистрация **автоматически снова открывается**
-
----
-
-### ✅ Обновлённый код (только изменённые части + полный файл для удобства):
-
-```python
-import os
-import logging
-import re
-import asyncio
-import threading
-import time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
-from flask import Flask, request
-
-# ================== ЛОГИРОВАНИЕ ==================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# ================== КОНСТАНТЫ ==================
-MAIN_SLOTS = 8
-RESERVE_SLOTS = 2
-TOTAL_SLOTS = MAIN_SLOTS + RESERVE_SLOTS
-
-# ================== ГЛОБАЛЬНЫЕ ДАННЫЕ ==================
-participants = []
-registration_open = False
-register_message_id = None
-tournament_display = None  # ← Теперь храним готовую строку для отображения
-admin_user_titles = {}
-
-# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
-
-async def get_group_admin_titles(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    try:
-        admins = await context.bot.get_chat_administrators(chat_id)
-        titles = {}
-        for admin in admins:
-            if admin.custom_title:
-                titles[admin.user.id] = admin.custom_title
-        return titles
-    except Exception as e:
-        logger.warning(f"Не удалось получить админов чата {chat_id}: {e}")
-        return {}
-
-def get_display_name(user) -> str:
-    full_name = user.first_name
-    if user.last_name:
-        full_name += " " + user.last_name
-
-    custom_title = admin_user_titles.get(user.id)
-    if custom_title:
-        full_name += f" ({custom_title})"
-
-    return full_name
-
-# Эта функция больше не используется в основном потоке, но оставлена на случай необходимости
 def format_participants_list():
     if not participants or not tournament_display:
         return "Нет участников."
@@ -163,7 +74,7 @@ def format_participants_list():
     return msg
 
 async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    global register_message_id, tournament_display
+    global register_message_id, tournament_display, MAIN_SLOTS, RESERVE_SLOTS
 
     if not register_message_id or not tournament_display:
         return
@@ -174,7 +85,6 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
     main_count = len(main_list)
     reserve_count = len(reserve_list)
 
-    # Формируем полное сообщение с именами
     text = (
         f"🎉 Регистрация на турнир {tournament_display}!\n"
         f"Места: {MAIN_SLOTS} основных + {RESERVE_SLOTS} запасных.\n\n"
@@ -187,7 +97,6 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
     if reserve_list:
         text += "\n".join(f"• {u}" for u in reserve_list)
 
-    # 🔑 Кнопки показываем ТОЛЬКО если регистрация открыта
     buttons = []
     if registration_open:
         buttons.append([
@@ -205,30 +114,61 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
     except Exception as e:
         logger.warning(f"Не удалось обновить сообщение: {e}")
 
+def promote_reserve_to_main():
+    """Повышает первого резервного до основного, если есть свободное место в основном составе."""
+    global participants, MAIN_SLOTS
+
+    main_count = sum(1 for p in participants if p['status'] == 'main')
+    if main_count < MAIN_SLOTS:
+        # Находим первого резервного
+        for p in participants:
+            if p['status'] == 'reserve':
+                p['status'] = 'main'
+                break
+
 # ================== ОБРАБОТЧИКИ КОМАНД И КНОПОК ==================
 
 async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"🔍 Получена команда /open от {update.effective_user.id} в чате {update.effective_chat.id}")
     global registration_open, participants, register_message_id, tournament_display, admin_user_titles
+    global MAIN_SLOTS, RESERVE_SLOTS, TOTAL_SLOTS
 
     if registration_open:
         await update.message.reply_text("Регистрация уже открыта!")
         return
 
-    if not context.args or len(context.args) < 2:
+    if not context.args or len(context.args) < 3:
         await update.message.reply_text(
-            "Укажите дату и время турнира:\n"
-            "Формат: /open ДД.ММ.ГГ ЧЧ-ММ\n"
-            "Пример: /open 19.01.26 14-10"
+            "Укажите количество мест и дату/время турнира:\n"
+            "Формат: /open-M-R ДД.ММ.ГГ ЧЧ-ММ\n"
+            "Пример: /open-8-2 19.10.26 14-10"
         )
         return
 
-    date_input = context.args[0].strip()
-    time_input = context.args[1].strip()
+    # Парсим первую часть как /open-M-R
+    command_part = context.args[0]
+    match = re.fullmatch(r'/open-(\d+)-(\d+)', command_part)
+    if not match:
+        await update.message.reply_text(
+            "Неверный формат команды. Используйте: /open-8-2 19.10.26 14-10"
+        )
+        return
+
+    try:
+        MAIN_SLOTS = int(match.group(1))
+        RESERVE_SLOTS = int(match.group(2))
+        if MAIN_SLOTS <= 0 or RESERVE_SLOTS < 0:
+            raise ValueError
+        TOTAL_SLOTS = MAIN_SLOTS + RESERVE_SLOTS
+    except (ValueError, IndexError):
+        await update.message.reply_text("Количество мест должно быть положительным числом.")
+        return
+
+    date_input = context.args[1].strip()
+    time_input = context.args[2].strip()
 
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}', date_input):
         await update.message.reply_text(
-            "Неверный формат даты. Используйте ДД.ММ.ГГ (например, 19.01.26)"
+            "Неверный формат даты. Используйте ДД.ММ.ГГ (например, 19.10.26)"
         )
         return
 
@@ -238,7 +178,6 @@ async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Преобразуем 14-10 → 14:10
     time_display = time_input.replace('-', ':')
     tournament_display = f"{date_input} в {time_display} по МСК"
 
@@ -269,17 +208,14 @@ async def close_registration_manually(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("Нет активной регистрации.")
         return
 
-    # 🔥 Главное изменение: НЕ меняем текст сообщения!
     registration_open = False
-    # Просто обновляем то же сообщение — кнопки исчезнут автоматически
     await update_registration_message(context, update.effective_chat.id)
 
-    # Опционально: отправить финальный список в чат (можно удалить, если не нужно)
     await update.message.reply_text(format_participants_list())
     await update.message.reply_text("✅ Регистрация закрыта.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global registration_open, participants
+    global registration_open, participants, MAIN_SLOTS, RESERVE_SLOTS, TOTAL_SLOTS
 
     query = update.callback_query
     await query.answer()
@@ -310,7 +246,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "status": status
         })
 
-        # 🔥 Автоматически закрываем регистрацию, если все 10 мест заняты
         if len(participants) >= TOTAL_SLOTS:
             registration_open = False
 
@@ -321,8 +256,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Вы не зарегистрированы.", show_alert=True)
             return
 
+        was_main = (user_entry['status'] == 'main')
         participants = [p for p in participants if p["user_id"] != user.id]
-        # 🔁 Если было 10/10, а кто-то отменил — регистрация снова открывается
+
+        # Если вышел из основного состава — пробуем повысить резервного
+        if was_main:
+            promote_reserve_to_main()
+
         if len(participants) < TOTAL_SLOTS:
             registration_open = True
 
