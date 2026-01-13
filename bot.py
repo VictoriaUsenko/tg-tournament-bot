@@ -1,6 +1,8 @@
 import os
 import logging
 import re
+import asyncio
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -8,6 +10,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
+from flask import Flask, request
 
 # ================== ЛОГИРОВАНИЕ ==================
 logging.basicConfig(
@@ -26,11 +29,12 @@ participants = []
 registration_open = False
 register_message_id = None
 tournament_date = None
-
-# { user_id: custom_title }
 admin_user_titles = {}
 
-# ================== АДМИНЫ И TITLES ==================
+application = None  # Будет инициализирован позже
+
+# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
+
 async def get_group_admin_titles(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     try:
         admins = await context.bot.get_chat_administrators(chat_id)
@@ -43,7 +47,6 @@ async def get_group_admin_titles(context: ContextTypes.DEFAULT_TYPE, chat_id: in
         logger.warning(f"Не удалось получить админов чата {chat_id}: {e}")
         return {}
 
-# ================== ИМЯ ПОЛЬЗОВАТЕЛЯ ==================
 def get_display_name(user) -> str:
     full_name = user.first_name
     if user.last_name:
@@ -55,7 +58,6 @@ def get_display_name(user) -> str:
 
     return full_name
 
-# ================== СПИСОК УЧАСТНИКОВ ==================
 def format_participants_list():
     if not participants or not tournament_date:
         return "Нет участников."
@@ -71,7 +73,6 @@ def format_participants_list():
 
     return msg
 
-# ================== ОБНОВЛЕНИЕ СООБЩЕНИЯ ==================
 async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     global register_message_id, tournament_date
 
@@ -105,7 +106,8 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
     except Exception as e:
         logger.warning(f"Не удалось обновить сообщение: {e}")
 
-# ================== ОТКРЫТИЕ РЕГИСТРАЦИИ ==================
+# ================== ОБРАБОТЧИКИ КОМАНД И КНОПОК ==================
+
 async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global registration_open, participants, register_message_id, tournament_date, admin_user_titles
 
@@ -148,7 +150,6 @@ async def open_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     register_message_id = message.message_id
 
-# ================== ЗАКРЫТИЕ РЕГИСТРАЦИИ ==================
 async def close_registration_manually(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global registration_open
 
@@ -170,7 +171,6 @@ async def close_registration_manually(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(format_participants_list())
     await update.message.reply_text("✅ Регистрация закрыта.")
 
-# ================== КНОПКИ ==================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global registration_open, participants
 
@@ -215,24 +215,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, format_participants_list())
         await update_registration_message(context, chat_id)
 
-# ================== СПИСОК ==================
 async def list_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_participants_list())
 
-# ================== MAIN ==================
-def main():
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not TOKEN:
-        raise ValueError("Токен не задан!")
+# ================== FLASK WEB SERVER ==================
 
-    application = Application.builder().token(TOKEN).build()
+app = Flask(__name__)
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("Токен не задан!")
+
+# Получаем внешний URL из переменной окружения Render
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+if not RENDER_EXTERNAL_URL:
+    raise ValueError("Переменная RENDER_EXTERNAL_URL не задана!")
+
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_BOT_TOKEN}"
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+
+async def setup_telegram_app():
+    global application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("open", open_registration))
     application.add_handler(CommandHandler("close", close_registration_manually))
     application.add_handler(CommandHandler("list", list_participants))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    application.run_polling()
+    # Устанавливаем webhook
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    logger.info(f"✅ Webhook успешно установлен на: {WEBHOOK_URL}")
 
+    # Запускаем приложение
+    await application.initialize()
+    await application.start()
+    logger.info("Telegram-приложение запущено в режиме webhook.")
+
+def run_telegram_in_background():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(setup_telegram_app())
+
+@app.before_first_request
+def start_telegram():
+    thread = threading.Thread(target=run_telegram_in_background, daemon=True)
+    thread.start()
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def telegram_webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_string = request.get_data().decode("utf-8")
+        update = Update.de_json(json_string, application.bot)
+        asyncio.run_coroutine_threadsafe(application.update_queue.put(update), application.loop)
+        return "OK"
+    else:
+        return "Invalid content type", 400
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return "OK", 200
+
+# ================== ЗАПУСК ==================
 if __name__ == "__main__":
-    main()
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
