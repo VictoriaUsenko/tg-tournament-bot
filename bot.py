@@ -3,6 +3,7 @@ import logging
 import re
 import asyncio
 import threading
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -30,8 +31,6 @@ registration_open = False
 register_message_id = None
 tournament_date = None
 admin_user_titles = {}
-
-application = None  # Будет инициализирован позже
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
 
@@ -233,12 +232,16 @@ if not RENDER_EXTERNAL_URL:
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
-def run_telegram_in_background():
+application = None
+_started = False
+
+def run_telegram_app():
+    """Запускает Telegram Application в фоновом потоке."""
     global application
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    async def _run():
+    async def main():
         global application
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -254,30 +257,38 @@ def run_telegram_in_background():
         await application.start()
         logger.info("✅ Telegram-приложение готово к работе.")
 
-    loop.run_until_complete(_run())
+        # Блокировка потока
+        await asyncio.Event().wait()
 
-# Глобальный флаг, чтобы запустить Telegram только один раз
-_started = False
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.run_until_complete(application.stop())
+        loop.close()
 
 @app.before_request
 def start_telegram_once():
     global _started
     if not _started:
         _started = True
-        thread = threading.Thread(target=run_telegram_in_background, daemon=True)
+        thread = threading.Thread(target=run_telegram_app, daemon=True)
         thread.start()
+        # Даём время на инициализацию
+        time.sleep(2)
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
     global application
-    if application is None or application.bot is None:
-        logger.warning("Получен webhook до инициализации бота!")
+    if application is None:
+        logger.warning("Webhook получен до инициализации бота!")
         return "Bot not ready", 503
 
     if request.headers.get("content-type") == "application/json":
-        # Правильный способ: передаём dict, а не строку
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run_coroutine_threadsafe(application.update_queue.put(update), application.loop)
+        update_dict = request.get_json(force=True)
+        update = Update.de_json(update_dict, application.bot)
+        application.update_queue.put_nowait(update)
         return "OK"
     else:
         return "Invalid content type", 400
@@ -285,6 +296,10 @@ def telegram_webhook():
 @app.route("/health", methods=["GET"])
 def health_check():
     return "OK", 200
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Telegram tournament bot is running!", 200
 
 # ================== ЗАПУСК ==================
 if __name__ == "__main__":
