@@ -57,6 +57,7 @@ def get_display_name(user) -> str:
 
     return full_name
 
+# Эта функция больше не используется в основном потоке, но оставлена на случай необходимости
 def format_participants_list():
     if not participants or not tournament_date:
         return "Нет участников."
@@ -78,15 +79,24 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE, chat_i
     if not register_message_id or not tournament_date:
         return
 
-    main_count = len([p for p in participants if p['status'] == 'main'])
-    reserve_count = len([p for p in participants if p['status'] == 'reserve'])
+    main_list = [p['full_name'] for p in participants if p['status'] == 'main']
+    reserve_list = [p['full_name'] for p in participants if p['status'] == 'reserve']
 
+    main_count = len(main_list)
+    reserve_count = len(reserve_list)
+
+    # Формируем полное сообщение с именами
     text = (
         f"🎉 Регистрация на турнир {tournament_date}!\n"
         f"Места: {MAIN_SLOTS} основных + {RESERVE_SLOTS} запасных.\n\n"
         f"🔹 Основные: {main_count}/{MAIN_SLOTS}\n"
-        f"🔸 Запасные: {reserve_count}/{RESERVE_SLOTS}"
     )
+    if main_list:
+        text += "\n".join(f"• {u}" for u in main_list) + "\n"
+
+    text += f"\n🔸 Запасные: {reserve_count}/{RESERVE_SLOTS}\n"
+    if reserve_list:
+        text += "\n".join(f"• {u}" for u in reserve_list)
 
     buttons = []
     if registration_open:
@@ -168,6 +178,7 @@ async def close_registration_manually(update: Update, context: ContextTypes.DEFA
     except:
         pass
 
+    # Опционально: можно убрать эти две строки, если не нужен финальный список
     await update.message.reply_text(format_participants_list())
     await update.message.reply_text("✅ Регистрация закрыта.")
 
@@ -203,7 +214,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "status": status
         })
 
-        await context.bot.send_message(chat_id, format_participants_list())
+        # УДАЛЕНО: await context.bot.send_message(...)
         await update_registration_message(context, chat_id)
 
     elif query.data == "unregister":
@@ -212,7 +223,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         participants = [p for p in participants if p["user_id"] != user.id]
-        await context.bot.send_message(chat_id, format_participants_list())
+        # УДАЛЕНО: await context.bot.send_message(...)
         await update_registration_message(context, chat_id)
 
 async def list_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,7 +272,6 @@ def run_telegram_app():
         
         _ready = True
 
-        # Важно: не блокируем event loop, а просто держим его активным
         try:
             while True:
                 await asyncio.sleep(1)
@@ -284,7 +294,6 @@ def start_telegram_once():
         _started = True
         thread = threading.Thread(target=run_telegram_app, daemon=True)
         thread.start()
-        # Ждём до 5 секунд инициализации
         for _ in range(10):
             if _ready:
                 break
